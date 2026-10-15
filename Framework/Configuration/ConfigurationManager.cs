@@ -61,6 +61,35 @@ namespace Framework
             Cache.SyncData(configNamespace);
         }
         /// <summary>
+        /// 一次向主機取得多個組態並放入快取，之後讀取這些組態時就不需要再逐一查詢。
+        /// 已在快取中、或已確認不存在的組態不會重複查詢。
+        /// </summary>
+        /// <param name="configNamespaces">要預先取得的組態名稱。</param>
+        public void Prefetch(params string[] configNamespaces)
+        {
+            List<string> keys = GetPrefetchKeys(configNamespaces);
+            if (keys.Count > 0)
+                Cache.SyncData(keys);
+        }
+        /// <summary>
+        /// Prefetch 的背景版本：在背景執行緒向主機取得組態，呼叫端不需等待。
+        /// 背景取得期間讀取組態，會等待取得完成。
+        /// </summary>
+        /// <param name="configNamespaces">要預先取得的組態名稱。</param>
+        public void PrefetchBackground(params string[] configNamespaces)
+        {
+            List<string> keys = GetPrefetchKeys(configNamespaces);
+            if (keys.Count > 0)
+                Cache.SyncDataBackground(keys);
+        }
+        private List<string> GetPrefetchKeys(IEnumerable<string> configNamespaces)
+        {
+            List<string> keys = new List<string>();
+            foreach (string each in configNamespaces)
+                keys.Add(NamespacePreprocess(each));
+            return Cache.FilterUnknownKeys(keys);
+        }
+        /// <summary>
         /// 刪除指定的組態。
         /// </summary>
         /// <param name="conf"></param>
@@ -85,6 +114,21 @@ namespace Framework
         {
             Provider = provider;
             Cache = new ConfigurationCache(Provider);
+            SubscribeCache();
+        }
+        /// <summary>
+        /// 建立與指定實體共用資料來源與快取的實體，避免同一份組態被查詢兩次。
+        /// </summary>
+        /// <param name="source">要共用快取的實體。</param>
+        internal ConfigurationManager(ConfigurationManager source)
+        {
+            Provider = source.Provider;
+            Cache = source.Cache;
+            SubscribeCache();
+        }
+
+        private void SubscribeCache()
+        {
             Cache.ItemUpdated += delegate(object sender, ItemUpdatedEventArgs e)
             {
                 if (ConfigurationUpdated != null)

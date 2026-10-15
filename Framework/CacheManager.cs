@@ -41,6 +41,15 @@ namespace Framework
         }
 
         /// <summary>
+        /// 是否記住查無資料的鍵值。為 true 時，查無資料的鍵值在下次以索引子讀取時直接傳回 default(T)，不再向主機查詢；
+        /// 直到呼叫 SyncData、SyncDataBackground 或 SyncAllBackground 重新同步該鍵值為止。預設為 false。
+        /// </summary>
+        protected virtual bool CacheMissingKeys
+        {
+            get { return false; }
+        }
+
+        /// <summary>
         /// 取得指定索引的項目，若指定的鍵值不存在則會先嚐試進行查尋。Indexer。
         /// </summary>
         /// <param name="primaryKey">取得項目的鍵值</param>
@@ -62,20 +71,33 @@ namespace Framework
         private bool _CanSort = false;
         private bool _CanGenericCompare = false;
         private ManualResetEvent _Loading = new ManualResetEvent(true);
+        private readonly object _SyncGate = new object();
         private BackgroundWorker _DataLoader = new BackgroundWorker();
         private Dictionary<string, T> _List = new Dictionary<string, T>();
         private CacheItemCollection _Items = null;
-        private List<string> _RemovedKeys = new List<string>();
-        private SortedList<string, int> _SortedOrder = new SortedList<string, int>();
+        private HashSet<string> _RemovedKeys = new HashSet<string>();
+        private HashSet<string> _MissingKeys = new HashSet<string>();
+        //同時作為 _List、_SortedOrder、_MissingKeys 的鎖定物件。
+        private Dictionary<string, int> _SortedOrder = new Dictionary<string, int>();
+
+        /// <summary>
+        /// 等待進行中的載入完成，並標示開始載入。鎖定確保兩個執行緒不會同時通過 WaitOne 後各自 Reset。
+        /// </summary>
+        private void BeginLoading()
+        {
+            lock (_SyncGate)
+            {
+                _Loading.WaitOne();
+                _Loading.Reset();
+            }
+        }
 
         private void _DataLoader_DoWork(object sender, DoWorkEventArgs e)
         {
             try
             {
-                _List.Clear();
                 Dictionary<string, T> list = GetAllData();
-                _SortedOrder.Clear();
-                int index = 0;
+                List<KeyValuePair<string, T>> ordered = new List<KeyValuePair<string, T>>();
                 if (_CanSort)
                 {
                     Dictionary<T, string> items = new Dictionary<T, string>();
@@ -85,25 +107,31 @@ namespace Framework
                         items.Add(list[key], key);
                         sorter.Add(list[key]);
                     }
-                    
+
                     sorter.Sort();
                     foreach (var item in sorter)
-                    {
-                        _List.Add(items[item], item);
-                        _SortedOrder.Add(items[item], index++);
-                    }
+                        ordered.Add(new KeyValuePair<string, T>(items[item], item));
                 }
-
                 else
                 {
                     foreach (var key in list.Keys)
+                        ordered.Add(new KeyValuePair<string, T>(key, list[key]));
+                }
+
+                lock (_SortedOrder)
+                {
+                    _List.Clear();
+                    _SortedOrder.Clear();
+                    _MissingKeys.Clear();
+                    int index = 0;
+                    foreach (var each in ordered)
                     {
-                        _List.Add(key, list[key]);
-                        _SortedOrder.Add(key, index++);
+                        _List.Add(each.Key, each.Value);
+                        _SortedOrder.Add(each.Key, index++);
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 _Loading.Set();
                 throw;
@@ -163,8 +191,7 @@ namespace Framework
             //重新取得所有資料
             if (!_DataLoader.IsBusy)
             {
-                _Loading.WaitOne();
-                _Loading.Reset();
+                BeginLoading();
                 _RemovedKeys.Clear();//清空已刪除清單
                 _DataLoader.RunWorkerAsync();
             }
@@ -183,165 +210,22 @@ namespace Framework
         /// <param name="primaryKeys">要更新資料的鍵值</param>
         public void SyncData(IEnumerable<string> primaryKeys)
         {
-            _Loading.WaitOne();
-            _Loading.Reset();
-            List<string> pKeys = new List<string>();
-            foreach (var key in primaryKeys)
-            {
-                if (!pKeys.Contains(key))
-                    pKeys.Add(key);
-            }
+            BeginLoading();
+            List<string> pKeys = Distinct(primaryKeys);
             List<string> removeKeys = new List<string>();
             List<string> updatedKeys = new List<string>(pKeys);
-            #region 更新快取
             try
             {
                 Dictionary<string, T> list = GetData(pKeys);
-                Dictionary<T, string> items = new Dictionary<T, string>();
-                pKeys.Sort();
-                List<T> sortedList = new List<T>();
-                List<T> updatedList = new List<T>();
-                List<string> insertKeys = new List<string>(pKeys);
-                foreach (var key in _List.Keys)
-                {
-                    T item;
-                    if (pKeys.BinarySearch(key) >= 0)
-                    {
-                        if (list.ContainsKey(key))
-                        {
-                            item = list[key];
-                            updatedList.Add(item);
-                        }
-                        else
-                        {
-                            removeKeys.Add(key);
-                            continue;
-                        }
-                        insertKeys.Remove(key);
-                    }
-                    else
-                    {
-                        item = _List[key];
-                        sortedList.Add(item);
-                    }
-                    items.Add(item, key);
-                }
-                foreach (var remove in removeKeys)
-                {
-                    _List.Remove(remove);
-                }
-                foreach (var key in insertKeys)
-                {
-                    T item;
-                    if (list.ContainsKey(key))
-                    {
-                        item = list[key];
-                        updatedList.Add(item);
-                        items.Add(item, key);
-                    }
-                    else
-                    {
-                        //沒有快取也沒有抓到資料的ID(從來就不存在這筆資料)就移出更新清單
-                        updatedKeys.Remove(key);
-                        continue;
-                    }
-                }
-                if (updatedList.Count > 0)
-                {
-                    if (_CanSort)
-                    {
-                        //因為List原本的排序就是對的，所以將原本資料沒有變更的部份加入sortedList後sortedList的排序也是對的，這時insert只要用BinarySearch找到要差入的Index即可保持排序
-                        foreach (var item in updatedList)
-                        {
-                            int index = 0;
-                            int length = sortedList.Count;
-                            switch (length)
-                            {
-                                case 0:
-
-                                    break;
-                                case 1:
-                                    if (_CanGenericCompare)
-                                    {
-                                        if (((IComparable<T>)item).CompareTo(sortedList[0]) >= 0)
-                                            index++;
-                                    }
-                                    else
-                                    {
-                                        if (((IComparable)item).CompareTo(sortedList[0]) >= 0)
-                                            index++;
-                                    }
-                                    break;
-                                default:
-                                    while (true)
-                                    {
-                                        int compare;
-                                        if (length <= 2)
-                                        {
-                                            if (_CanGenericCompare)
-                                                compare = (((IComparable<T>)item).CompareTo(sortedList[index + 1]));
-                                            else
-                                                compare = (((IComparable)item).CompareTo(sortedList[index + 1]));
-                                            if (compare >= 0)
-                                            {
-                                                index++;
-                                            }
-                                            break;
-                                        }
-                                        int helfLength = (length >> 1) + (length & 1);
-                                        if (_CanGenericCompare)
-                                            compare = (((IComparable<T>)item).CompareTo(sortedList[index + helfLength - 1]));
-                                        else
-                                            compare = (((IComparable)item).CompareTo(sortedList[index + helfLength - 1]));
-                                        if (compare >= 0)
-                                        {
-                                            index += helfLength - 1;
-                                        }
-                                        length -= helfLength - 1;
-                                    }
-                                    if (index == 0)
-                                    {
-                                        if (_CanGenericCompare)
-                                        {
-                                            if (((IComparable<T>)item).CompareTo(sortedList[0]) >= 0)
-                                                index++;
-                                        }
-                                        else
-                                        {
-                                            if (((IComparable)item).CompareTo(sortedList[0]) >= 0)
-                                                index++;
-                                        }
-                                    }
-                                    else
-                                        index++;
-                                    break;
-                            }
-                            sortedList.Insert(index, item);
-                        }
-                    }
-                    else
-                        sortedList.AddRange(updatedList);
-                    _List.Clear();
-                    lock (_SortedOrder)
-                    {
-                        _SortedOrder.Clear();
-                        int sortedIndex = 0;
-                        foreach (var item in sortedList)
-                        {
-                            _List.Add(items[item], item);
-                            _SortedOrder.Add(items[item], sortedIndex++);
-                        }
-                    }
-                }
+                MergeData(pKeys, list, removeKeys, updatedKeys);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 _Loading.Set();
-                throw ex;
+                throw;
             }
-            #endregion
             _Loading.Set();
-            _RemovedKeys.AddRange(removeKeys);
+            _RemovedKeys.UnionWith(removeKeys);
             updatedKeys.AddRange(removeKeys);
             if (updatedKeys.Count > 0)
             {
@@ -362,14 +246,8 @@ namespace Framework
         /// <param name="primaryKeys">要更新資料的鍵值</param>
         public void SyncDataBackground(IEnumerable<string> primaryKeys)
         {
-            _Loading.WaitOne();
-            _Loading.Reset();
-            List<string> pKeys = new List<string>();
-            foreach (var key in primaryKeys)
-            {
-                if (!pKeys.Contains(key))
-                    pKeys.Add(key);
-            }
+            BeginLoading();
+            List<string> pKeys = Distinct(primaryKeys);
             #region 如果要求的Key都是已經被Removed就不處理
             if (_RemovedKeys.Count != 0)
             {
@@ -383,7 +261,10 @@ namespace Framework
                     }
                 }
                 if (removed)
+                {
+                    _Loading.Set(); //沒有要處理的資料，必須解除載入狀態，否則之後的讀取會永遠等待。
                     return;
+                }
             }
             #endregion
             List<string> removeKeys = new List<string>();
@@ -393,155 +274,20 @@ namespace Framework
             {
                 try
                 {
-                    #region 更新快取
                     Dictionary<string, T> list = GetData(pKeys);  //取得指定的primary keys 的資料物件
-                    Dictionary<T, string> items = new Dictionary<T, string>();
-                    pKeys.Sort();
-                    List<T> sortedList = new List<T>();
-                    List<T> updatedList = new List<T>();
-                    List<string> insertKeys = new List<string>(pKeys);
-                    foreach (var key in _List.Keys)   //對於目前Cache Manager 中所存的所有物件的 primary Key
-                    {
-                        T item;
-                        if (pKeys.BinarySearch(key) >= 0)
-                        {
-                            if (list.ContainsKey(key))    //如果取得的資料物件中含有這個key，表示是更新
-                            {
-                                item = list[key];
-                                updatedList.Add(item);
-                            }
-                            else
-                            {
-                                removeKeys.Add(key);        //否則就是被刪掉了
-                                continue;
-                            }
-                            insertKeys.Remove(key);
-                        }
-                        else
-                        {
-                            item = _List[key];
-                            sortedList.Add(item);
-                        }
-                        items.Add(item, key);
-                    }
-                    foreach (var remove in removeKeys)    //從Cache Manager 的所含的資料物件中清掉已被從資料庫中刪除的物件。
-                    {
-                        _List.Remove(remove);
-                    }
-                    foreach (var key in insertKeys)
-                    {
-                        T item;
-                        if (list.ContainsKey(key))
-                        {
-                            item = list[key];
-                            updatedList.Add(item);
-                            items.Add(item, key);
-                        }
-                        else
-                        {
-                            //沒有快取也沒有抓到資料的ID(從來就不存在這筆資料)就移出更新清單
-                            updatedKeys.Remove(key);
-                            continue;
-                        }
-                    }
-                    if (updatedList.Count > 0)
-                    {
-                        if (_CanSort)
-                        {
-                            //因為List原本的排序就是對的，所以將原本資料沒有變更的部份加入sortedList後sortedList的排序也是對的，這時insert只要用BinarySearch找到要差入的Index即可保持排序
-                            foreach (var item in updatedList)
-                            {
-                                int index = 0;
-                                int length = sortedList.Count;
-                                switch (length)
-                                {
-                                    case 0:
-
-                                        break;
-                                    case 1:
-                                        if (_CanGenericCompare)
-                                        {
-                                            if (((IComparable<T>)item).CompareTo(sortedList[0]) >= 0)
-                                                index++;
-                                        }
-                                        else
-                                        {
-                                            if (((IComparable)item).CompareTo(sortedList[0]) >= 0)
-                                                index++;
-                                        }
-                                        break;
-                                    default:
-                                        while (true)
-                                        {
-                                            int compare;
-                                            if (length <= 2)
-                                            {
-                                                if (_CanGenericCompare)
-                                                    compare = (((IComparable<T>)item).CompareTo(sortedList[index + 1]));
-                                                else
-                                                    compare = (((IComparable)item).CompareTo(sortedList[index + 1]));
-                                                if (compare >= 0)
-                                                {
-                                                    index++;
-                                                }
-                                                break;
-                                            }
-                                            int helfLength = (length >> 1) + (length & 1);
-                                            if (_CanGenericCompare)
-                                                compare = (((IComparable<T>)item).CompareTo(sortedList[index + helfLength - 1]));
-                                            else
-                                                compare = (((IComparable)item).CompareTo(sortedList[index + helfLength - 1]));
-                                            if (compare >= 0)
-                                            {
-                                                index += helfLength - 1;
-                                            }
-                                            length -= helfLength - 1;
-                                        }
-                                        if (index == 0)
-                                        {
-                                            if (_CanGenericCompare)
-                                            {
-                                                if (((IComparable<T>)item).CompareTo(sortedList[0]) >= 0)
-                                                    index++;
-                                            }
-                                            else
-                                            {
-                                                if (((IComparable)item).CompareTo(sortedList[0]) >= 0)
-                                                    index++;
-                                            }
-                                        }
-                                        else
-                                            index++;
-                                        break;
-                                }
-                                sortedList.Insert(index, item);
-                            }
-                        }
-                        else
-                            sortedList.AddRange(updatedList);
-                        _List.Clear();
-                        lock (_SortedOrder)
-                        {
-                            _SortedOrder.Clear();
-                            int sortedIndex = 0;
-                            foreach (var item in sortedList)
-                            {
-                                _List.Add(items[item], item);
-                                _SortedOrder.Add(items[item], sortedIndex++);
-                            }
-                        }
-                    }
-                    _Loading.Set();
-                    #endregion
+                    MergeData(pKeys, list, removeKeys, updatedKeys);
                 }
                 catch
+                {
+                }
+                finally
                 {
                     _Loading.Set();
                 }
             };
             bkw.RunWorkerCompleted += delegate
             {
-                _RemovedKeys.AddRange(removeKeys);
+                _RemovedKeys.UnionWith(removeKeys);
                 updatedKeys.AddRange(removeKeys);
                 if (updatedKeys.Count > 0)
                 {
@@ -549,6 +295,177 @@ namespace Framework
                 }
             };
             bkw.RunWorkerAsync();
+        }
+
+        private static List<string> Distinct(IEnumerable<string> keys)
+        {
+            List<string> result = new List<string>();
+            HashSet<string> seen = new HashSet<string>();
+            foreach (var key in keys)
+            {
+                if (seen.Add(key))
+                    result.Add(key);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 將主機傳回的資料合併到快取。
+        /// </summary>
+        /// <param name="pKeys">要求同步的鍵值（不重複）。</param>
+        /// <param name="list">主機傳回的資料。</param>
+        /// <param name="removeKeys">輸出：原本在快取中、但主機已查無資料的鍵值。</param>
+        /// <param name="updatedKeys">輸出：移除從未存在過的鍵值。</param>
+        private void MergeData(List<string> pKeys, Dictionary<string, T> list, List<string> removeKeys, List<string> updatedKeys)
+        {
+            List<string> sortedKeys = new List<string>(pKeys);
+            sortedKeys.Sort();
+            HashSet<string> requested = new HashSet<string>(pKeys);
+            HashSet<string> insertKeys = new HashSet<string>(pKeys);
+            Dictionary<T, string> items = new Dictionary<T, string>();
+            List<T> sortedList = new List<T>();
+            List<T> updatedList = new List<T>();
+
+            lock (_SortedOrder)
+            {
+                foreach (var key in _List.Keys)   //對於目前Cache Manager 中所存的所有物件的 primary Key
+                {
+                    T item;
+                    if (requested.Contains(key))
+                    {
+                        if (!list.TryGetValue(key, out item))    //取得的資料物件中沒有這個key，表示被刪掉了
+                        {
+                            removeKeys.Add(key);
+                            continue;
+                        }
+                        updatedList.Add(item);
+                        insertKeys.Remove(key);
+                    }
+                    else
+                    {
+                        item = _List[key];
+                        sortedList.Add(item);
+                    }
+                    items.Add(item, key);
+                }
+                foreach (var remove in removeKeys)    //從Cache Manager 的所含的資料物件中清掉已被從資料庫中刪除的物件。
+                {
+                    _List.Remove(remove);
+                    _SortedOrder.Remove(remove);
+                }
+                foreach (var key in sortedKeys)
+                {
+                    if (!insertKeys.Contains(key))
+                        continue;
+
+                    T item;
+                    if (list.TryGetValue(key, out item))
+                    {
+                        updatedList.Add(item);
+                        items.Add(item, key);
+                    }
+                    else
+                    {
+                        //沒有快取也沒有抓到資料的ID(從來就不存在這筆資料)就移出更新清單
+                        updatedKeys.Remove(key);
+                    }
+                }
+                if (CacheMissingKeys)
+                {
+                    foreach (var key in pKeys)
+                    {
+                        if (list.ContainsKey(key))
+                            _MissingKeys.Remove(key);
+                        else
+                            _MissingKeys.Add(key);
+                    }
+                }
+                if (updatedList.Count > 0)
+                {
+                    if (_CanSort)
+                    {
+                        //因為List原本的排序就是對的，所以將原本資料沒有變更的部份加入sortedList後sortedList的排序也是對的，這時insert只要用BinarySearch找到要差入的Index即可保持排序
+                        foreach (var item in updatedList)
+                            sortedList.Insert(FindInsertIndex(sortedList, item), item);
+                    }
+                    else
+                        sortedList.AddRange(updatedList);
+                    _List.Clear();
+                    _SortedOrder.Clear();
+                    int sortedIndex = 0;
+                    foreach (var item in sortedList)
+                    {
+                        _List.Add(items[item], item);
+                        _SortedOrder.Add(items[item], sortedIndex++);
+                    }
+                }
+            }
+        }
+
+        private int Compare(T x, T y)
+        {
+            if (_CanGenericCompare)
+                return ((IComparable<T>)x).CompareTo(y);
+            else
+                return ((IComparable)x).CompareTo(y);
+        }
+
+        private int FindInsertIndex(List<T> sortedList, T item)
+        {
+            int index = 0;
+            int length = sortedList.Count;
+            switch (length)
+            {
+                case 0:
+                    break;
+                case 1:
+                    if (Compare(item, sortedList[0]) >= 0)
+                        index++;
+                    break;
+                default:
+                    while (true)
+                    {
+                        if (length <= 2)
+                        {
+                            if (Compare(item, sortedList[index + 1]) >= 0)
+                                index++;
+                            break;
+                        }
+                        int helfLength = (length >> 1) + (length & 1);
+                        if (Compare(item, sortedList[index + helfLength - 1]) >= 0)
+                            index += helfLength - 1;
+                        length -= helfLength - 1;
+                    }
+                    if (index == 0)
+                    {
+                        if (Compare(item, sortedList[0]) >= 0)
+                            index++;
+                    }
+                    else
+                        index++;
+                    break;
+            }
+            return index;
+        }
+
+        /// <summary>
+        /// 從指定的鍵值中，挑出合法、尚未快取、也還沒確認查無資料的鍵值。
+        /// </summary>
+        internal List<string> FilterUnknownKeys(IEnumerable<string> keys)
+        {
+            List<string> result = new List<string>();
+            lock (_SortedOrder)
+            {
+                foreach (var key in Distinct(keys))
+                {
+                    if (!ValidateKey(key) || _List.ContainsKey(key))
+                        continue;
+                    if (CacheMissingKeys && _MissingKeys.Contains(key))
+                        continue;
+                    result.Add(key);
+                }
+            }
+            return result;
         }
         /// <summary>
         /// 引發ItemUpdated事件。
@@ -576,25 +493,33 @@ namespace Framework
         {
             if (_CanSort && !_DataLoader.IsBusy)
             {
-                _Loading.WaitOne();
-                _Loading.Reset();
-                _SortedOrder.Clear();
-                Dictionary<T, string> items = new Dictionary<T, string>();
-                List<T> sorter = new List<T>();
-                foreach (var key in _List.Keys)
+                BeginLoading();
+                try
                 {
-                    items.Add(_List[key], key);
-                    sorter.Add(_List[key]);
+                    lock (_SortedOrder)
+                    {
+                        Dictionary<T, string> items = new Dictionary<T, string>();
+                        List<T> sorter = new List<T>();
+                        foreach (var key in _List.Keys)
+                        {
+                            items.Add(_List[key], key);
+                            sorter.Add(_List[key]);
+                        }
+                        sorter.Sort();
+                        _List.Clear();
+                        _SortedOrder.Clear();
+                        int index = 0;
+                        foreach (var item in sorter)
+                        {
+                            _List.Add(items[item], item);
+                            _SortedOrder.Add(items[item], index++);
+                        }
+                    }
                 }
-                sorter.Sort();
-                _List.Clear();
-                int index = 0;
-                foreach (var item in sorter)
+                finally
                 {
-                    _List.Add(items[item], item);
-                    _SortedOrder.Add(items[item], index++);
+                    _Loading.Set();
                 }
-                _Loading.Set();
             }
         }
         /// <summary>
@@ -603,16 +528,19 @@ namespace Framework
         /// <param name="primaryKey1">第一個項目的鍵值</param>
         /// <param name="primaryKey2">第二個項目的鍵值</param>
         /// <returns>
-        /// 小於零：primaryKey1的項目小於 primaryKey2的項目 
-        /// 等於零：primaryKey1的項目等於 primaryKey2的項目 
-        /// 大於零：primaryKey1的項目大於 primaryKey2的項目 
+        /// 小於零：primaryKey1的項目小於 primaryKey2的項目
+        /// 等於零：primaryKey1的項目等於 primaryKey2的項目
+        /// 大於零：primaryKey1的項目大於 primaryKey2的項目
         /// </returns>
         public int QuickCompare(string primaryKey1, string primaryKey2)
         {
             var v1 = int.MinValue;
             var v2 = int.MinValue;
-            _SortedOrder.TryGetValue(primaryKey1, out v1);
-            _SortedOrder.TryGetValue(primaryKey2, out v2);
+            lock (_SortedOrder)
+            {
+                _SortedOrder.TryGetValue(primaryKey1, out v1);
+                _SortedOrder.TryGetValue(primaryKey2, out v2);
+            }
             return v1.CompareTo(v2);
         }
         /// <summary>
@@ -652,23 +580,27 @@ namespace Framework
             {
                 get
                 {
+                    T value;
                     lock (_Parent._SortedOrder)
                     {
-                        if (_Items.ContainsKey(ID))
-                            return _Items[ID];
+                        if (_Items.TryGetValue(ID, out value))
+                            return value;
+                        if (_Parent.CacheMissingKeys && _Parent._MissingKeys.Contains(ID))
+                            return default(T);
+                    }
+
+                    if (!_Parent.ValidateKey(ID))
+                        return default(T);
+
+                    //向主機查詢時不持有鎖定，避免其他執行緒的讀取被網路等待卡住。
+                    _Parent.SyncData(ID);
+
+                    lock (_Parent._SortedOrder)
+                    {
+                        if (_Items.TryGetValue(ID, out value))
+                            return value;
                         else
-                        {
-                            if (_Parent.ValidateKey(ID))
-                            {
-                                _Parent.SyncData(ID);
-                                if (_Items.ContainsKey(ID))
-                                    return _Items[ID];
-                                else
-                                    return default(T);
-                            }
-                            else
-                                return default(T);
-                        }
+                            return default(T);
                     }
                 }
             }

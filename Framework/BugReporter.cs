@@ -26,10 +26,10 @@ namespace Framework
 
         public static void SetRunTimeMessage(string field, string msg)
         {
-            if ( _RunTimeMessages.ContainsKey(field) )
+            lock ( _RunTimeMessages )
+            {
                 _RunTimeMessages[field] = msg;
-            else
-                _RunTimeMessages.Add(field, msg);
+            }
         }
 
         public static void ReportException(string system, string version, Exception exception, bool show)
@@ -46,6 +46,12 @@ namespace Framework
         {
             if ( !FilterThreadAbortException(exception) )
             {
+                if ( !show )
+                {
+                    ReportSilently(system, version, exception, customTransform, tipInfo);
+                    return;
+                }
+
                 BugReporter exceptionForm = null;
                 try
                 {
@@ -94,9 +100,14 @@ namespace Framework
 
         private XmlDocument doc;
 
-        private string fileName = DateTime.Now.Year + "_" + DateTime.Now.Month + "_" + DateTime.Now.Day + "_" + DateTime.Now.Hour + "_" + DateTime.Now.Month + "_" + DateTime.Now.Second + ".xml";
+        private string fileName = NewFileName();
 
-        private void SaveExceptionOnLocal()
+        private static string NewFileName()
+        {
+            return DateTime.Now.Year + "_" + DateTime.Now.Month + "_" + DateTime.Now.Day + "_" + DateTime.Now.Hour + "_" + DateTime.Now.Month + "_" + DateTime.Now.Second + ".xml";
+        }
+
+        private static void SaveExceptionOnLocal(XmlDocument doc, string fileName)
         {
             try
             {
@@ -110,10 +121,71 @@ namespace Framework
             catch { }
         }
 
-        private BugReporter(ExceptionReport customTransform, Exception e, string system, string version, bool sorry, string tipInfo)
+        private static bool ReportToServerDisabled
         {
-            InitializeComponent();
-            doc = new XmlDocument();
+            get { return File.Exists(System.IO.Path.Combine(Application.StartupPath, "噓~不要告訴johnny5")); }
+        }
+
+        /// <summary>
+        /// 傳送錯誤報告到回報主機，傳回是否成功。
+        /// </summary>
+        private static bool SendToServer(XmlDocument doc, string system, string version)
+        {
+            try
+            {
+                DSConnection conn = GetDSConnection();
+
+                if ( conn == null )
+                    throw new Exception("無法連線到錯誤回報系統。");
+
+                conn.SendRequest("QualitySystem.ReportBug", new DSRequest("<ReportBugRequest>" +
+                    "<SystemName>" + system + "</SystemName>" +
+                    "<SystemVersion>" + version + "</SystemVersion>" +
+                    "<Content>" + doc.DocumentElement.OuterXml + "</Content>" +
+                    "</ReportBugRequest>"));
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static readonly HashSet<string> _SilentReported = new HashSet<string>();
+
+        /// <summary>
+        /// 不顯示畫面的錯誤回報：不建立表單，本機存檔後在背景傳送，避免卡住呼叫端（例如啟動流程）。
+        /// 同一種錯誤（型別與訊息相同）在單次執行中只傳送一次。
+        /// </summary>
+        private static void ReportSilently(string system, string version, Exception exception, ExceptionReport customTransform, string tipInfo)
+        {
+            XmlDocument report;
+            try
+            {
+                report = BuildReportDocument(customTransform, exception, system, version, false, tipInfo);
+            }
+            catch
+            {
+                return;
+            }
+
+            SaveExceptionOnLocal(report, NewFileName());
+
+            if ( ReportToServerDisabled )
+                return;
+
+            lock ( _SilentReported )
+            {
+                if ( !_SilentReported.Add(exception.GetType().FullName + ":" + exception.Message) )
+                    return;
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate { SendToServer(report, system, version); });
+        }
+
+        private static XmlDocument BuildReportDocument(ExceptionReport customTransform, Exception e, string system, string version, bool sorry, string tipInfo)
+        {
+            XmlDocument doc = new XmlDocument();
 
             //doc.LoadXml("<Exception></Exception>");
             ExceptionReport report;
@@ -154,56 +226,56 @@ namespace Framework
             try { doc.DocumentElement.SetAttribute("EnvironmentPlatform", Environment.OSVersion.Platform.ToString()); }
             catch { }
 
-            foreach ( string field in _RunTimeMessages.Keys )
+            lock ( _RunTimeMessages )
             {
-                doc.DocumentElement.SetAttribute(field, _RunTimeMessages[field]);
+                foreach ( string field in _RunTimeMessages.Keys )
+                {
+                    doc.DocumentElement.SetAttribute(field, _RunTimeMessages[field]);
+                }
             }
 
             //BulideExceptionXml(doc.DocumentElement, e);
 
-            SaveExceptionOnLocal();
-            if ( !File.Exists(System.IO.Path.Combine(Application.StartupPath, "噓~不要告訴johnny5")) )
+            return doc;
+        }
+
+        private BugReporter(ExceptionReport customTransform, Exception e, string system, string version, bool sorry, string tipInfo)
+        {
+            InitializeComponent();
+            doc = BuildReportDocument(customTransform, e, system, version, sorry, tipInfo);
+
+            SaveExceptionOnLocal(doc, fileName);
+            if ( !ReportToServerDisabled )
             {
-                #region 傳送回SERVER
-                try
-                {
-                    DSConnection conn = GetDSConnection();
-
-                    if ( conn == null )
-                        throw new Exception("無法連線到錯誤回報系統。");
-
-                    conn.SendRequest("QualitySystem.ReportBug", new DSRequest("<ReportBugRequest>" +
-                        "<SystemName>" + system + "</SystemName>" +
-                        "<SystemVersion>" + version + "</SystemVersion>" +
-                        "<Content>" + doc.DocumentElement.OuterXml + "</Content>" +
-                        "</ReportBugRequest>"));
-                }
-                catch
+                if ( !SendToServer(doc, system, version) )
                 {
                     this.richTextBox1.Text = "系統發生錯誤，進行中的動作將停止執行。\r\n\r\n嘗試自動回報失敗，錯誤資訊儲存於\"" + Application.StartupPath + "\\Exception\\" + fileName + "\"。\r\n\r\n造成您的不便，本公司深感抱歉。\r\n";
                 }
-                #endregion
             }
         }
 
         private static DSConnection _dscon;
+        private static DateTime _dsconFailedAt = DateTime.MinValue;
+        private static readonly TimeSpan ConnectRetryCooldown = TimeSpan.FromMinutes(5);
+        private static readonly object _dsconLock = new object();
         private static DSConnection GetDSConnection()
         {
-            if ( _dscon == null )
+            lock ( _dsconLock )
             {
-                Ping p = new Ping();
-                //string host = "beta.smartschool.com.tw";
+                if ( _dscon != null )
+                    return _dscon;
+
+                //連線失敗後一段時間內不再重試，避免每次回報都等待連線逾時。
+                if ( DateTime.Now - _dsconFailedAt < ConnectRetryCooldown )
+                    return null;
+
                 try
                 {
-                    //PingReply pr = p.Send(host, 2000);
-                    //if (pr.Status == IPStatus.Success)
-                    //    _dscon = new DSConnection("http://beta.smartschool.com.tw/commonserver/quality", "anonymous", "");
-                    //else
                     _dscon = new DSConnection("http://beta.smartschool.com.tw/commonserver/quality", "anonymous", "");
                 }
                 catch ( Exception )
                 {
-                    //MsgBox.Show("找不到更新主機 :" + host);
+                    _dsconFailedAt = DateTime.Now;
                     return null;
                 }
                 if ( !_dscon.IsConnected )
@@ -215,10 +287,11 @@ namespace Framework
                     catch ( Exception )
                     {
                         _dscon = null;
+                        _dsconFailedAt = DateTime.Now;
                     }
                 }
+                return _dscon;
             }
-            return _dscon;
         }
 
         private void BulideExceptionXml(XmlElement element, Exception ex)

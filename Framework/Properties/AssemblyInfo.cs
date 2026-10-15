@@ -19,6 +19,9 @@ using System.Runtime.InteropServices;
 // 的型別，請在該型別上將 ComVisible 屬性設定為 true。
 [assembly: ComVisible(false)]
 
+// 讓 Framework.Tests 可以測試 internal 成員。
+[assembly: InternalsVisibleTo("Framework.Tests")]
+
 // 下列 GUID 為專案公開 (Expose) 至 COM 時所要使用的 typelib ID
 [assembly: Guid("7a6b9ac1-7a5d-40c7-9c1b-cad0b5b635d2")]
 
@@ -32,5 +35,5 @@ using System.Runtime.InteropServices;
 // 您可以指定所有的值，也可以依照以下的方式，使用 '*' 將組建和修訂編號
 // 指定為預設值:
 // [assembly: AssemblyVersion("1.0.*")]
-[assembly: AssemblyVersion("1.0.0.10")]
-[assembly: AssemblyFileVersion("1.0.0.10")]
+[assembly: AssemblyVersion("1.0.0.11")]
+[assembly: AssemblyFileVersion("1.0.0.11")]

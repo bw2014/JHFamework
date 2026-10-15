@@ -1,0 +1,55 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{5B0C7E52-3F1D-4C8E-9A57-2E6B1D0A4F11}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Framework.Tests</RootNamespace>
+    <AssemblyName>Framework.Tests</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>
+    <DefineConstants>TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+    <!-- Framework.csproj 以 HintPath 指向 ..\LibraryProject；若該目錄不存在，改由 Framework\Library 解析參考。 -->
+    <ReferencePath Condition=" '$(ReferencePath)' == '' ">$(MSBuildThisFileDirectory)..\Framework\Library\</ReferencePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="FISCA.DSAClient">
+      <HintPath>..\Framework\Library\FISCA.DSAClient.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Framework\Framework.csproj">
+      <Project>{8CDD2105-17D3-4620-8EF6-65CB41E8DBCA}</Project>
+      <Name>Framework</Name>
+      <!-- Debug 組態的 Framework 會輸出到 FiscaRuntime，測試一律使用 Release 組態建置 Framework。 -->
+      <SetConfiguration>Configuration=Release</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Framework 在執行時需要的 FISCA 組件（Framework 參考時設定 Private=False，不會自動複製）。 -->
+    <None Include="..\Framework\Library\*.dll">
+      <Link>%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="TestRunner.cs" />
+    <Compile Include="CacheManagerTests.cs" />
+    <Compile Include="ConfigurationManagerTests.cs" />
+    <Compile Include="StartupProbesTests.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

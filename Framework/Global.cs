@@ -29,6 +29,15 @@ namespace Framework
                 _readonly = readOnly;
             }
 
+            /// <summary>
+            /// 建立與指定實體共用快取的全域組態管理，唯讀與否只在此層判斷。
+            /// </summary>
+            internal GlobalConfigManager(GlobalConfigManager source, bool readOnly)
+                : base(source)
+            {
+                _readonly = readOnly;
+            }
+
             public override bool Readonly
             {
                 get

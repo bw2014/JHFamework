@@ -16,18 +16,22 @@ namespace Framework
     internal class ConfigProvider_Global : IConfigurationProvider
     {
         private static DSConnection Connection { get; set; }
+        private static readonly object ConnectionLock = new object();
 
-        private static DSXmlHelper CallService(string serviceName, DSXmlHelper request)
+        private static DSConnection GetConnection()
         {
-            string Server;
-
-            if (Diagnostic.DebugMode && Diagnostic.Options.UseInsideGlobalConfigurationServer)
-                Server = Diagnostic.Options.InsideGlobalConfigurationServer;
-            else
-                Server = "quality";
-
-            if (Connection == null)
+            lock (ConnectionLock)
             {
+                if (Connection != null)
+                    return Connection;
+
+                string Server;
+
+                if (Diagnostic.DebugMode && Diagnostic.Options.UseInsideGlobalConfigurationServer)
+                    Server = Diagnostic.Options.InsideGlobalConfigurationServer;
+                else
+                    Server = "quality";
+
                 try
                 {
                     FISCA.DSAClient.Connection c = new FISCA.DSAClient.Connection();
@@ -46,14 +50,30 @@ namespace Framework
 
                     throw;
                 }
-            }
 
-            return Connection.SendRequest(serviceName, request);
+                return Connection;
+            }
+        }
+
+        private static DSXmlHelper CallService(string serviceName, DSXmlHelper request)
+        {
+            return GetConnection().SendRequest(serviceName, request);
+        }
+
+        /// <summary>
+        /// 預先建立到全域組態主機的連線，讓第一次讀取全域組態時不必等待連線建立。失敗時不丟出例外，第一次讀取時會再重試。
+        /// </summary>
+        internal static void WarmUp()
+        {
+            try
+            {
+                StartupProfiler.Measure("ConfigProvider_Global.WarmUp", delegate { GetConnection(); });
+            }
+            catch { }
         }
 
         public ConfigProvider_Global()
         {
-            Connection = null;
         }
 
         #region IConfigurationProvider 成員

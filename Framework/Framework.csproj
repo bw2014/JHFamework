@@ -321,6 +321,8 @@
     <Compile Include="Configuration\ConfigProvider_User.cs" />
     <Compile Include="Decimal.cs" />
     <Compile Include="SmartCache.cs" />
+    <Compile Include="StartupProbes.cs" />
+    <Compile Include="StartupProfiler.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Resources\spiral_lock_64.png" />

@@ -84,7 +84,20 @@ namespace Framework.Legacy
         /// 取得學校相關設定。
         /// </summary>
         [Obsolete()]
-        public static SchoolConfig SchoolConfig { get { return Instance._school_config; } set { Instance._school_config = value; } }
+        public static SchoolConfig SchoolConfig
+        {
+            get
+            {
+                //啟動時用不到，第一次存取時才向主機讀取。
+                lock (_lazy_lock)
+                {
+                    if (Instance._school_config == null)
+                        Instance._school_config = new SchoolConfig();
+                    return Instance._school_config;
+                }
+            }
+            set { Instance._school_config = value; }
+        }
 
         /// <summary>
         /// 取得系統相關設定。
@@ -96,7 +109,19 @@ namespace Framework.Legacy
         /// 取得系統相關設定。
         /// </summary>
         [Obsolete()]
-        public static ConfigurationCollection Configuration { get { return Instance._configuration; } set { Instance._configuration = value; } }
+        public static ConfigurationCollection Configuration
+        {
+            get
+            {
+                lock (_lazy_lock)
+                {
+                    if (Instance._configuration == null)
+                        Instance._configuration = new ConfigurationCollection();
+                    return Instance._configuration;
+                }
+            }
+            set { Instance._configuration = value; }
+        }
 
         /// <summary>
         /// 取得系統版本。
@@ -113,13 +138,16 @@ namespace Framework.Legacy
 
         #endregion
 
-        internal static void BeginInitialize()
+        private static readonly object _lazy_lock = new object();
+
+        /// <summary>
+        /// 設定啟動時已（並行）取得的資料。SchoolConfig 與 Configuration 改為第一次存取時才載入。
+        /// </summary>
+        internal static void BeginInitialize(FeatureAcl acl, SchoolInformation schoolInformation, SystemConfig systemConfig)
         {
-            Acl = Permission.GetUserAccessControlList();
-            SchoolInformation = new SchoolInformation();
-            SchoolConfig = new SchoolConfig();
-            SystemConfig = new SystemConfig();
-            Configuration = new ConfigurationCollection();
+            Acl = acl;
+            SchoolInformation = schoolInformation;
+            SystemConfig = systemConfig;
         }
 
         internal static void EndInitialize()

@@ -14,8 +14,17 @@ namespace Framework.Legacy
         private XmlElement BackupElement;
 
         public PreferenceProvider()
+            : this(Personal.GetPreference())
         {
-            RootElement = Personal.GetPreference().GetContent().BaseElement;
+        }
+
+        /// <summary>
+        /// 使用已取得的個人設定資料建立實體。必須在 UI 執行緒呼叫，因為 Application.Idle 只對建立時所在的執行緒有效。
+        /// </summary>
+        /// <param name="preference">Personal.GetPreference() 的回應。</param>
+        internal PreferenceProvider(FISCA.DSAUtil.DSResponse preference)
+        {
+            RootElement = preference.GetContent().BaseElement;
             BackupElement = (XmlElement)new XmlDocument().ImportNode(RootElement, true);
             Application.Idle += delegate
             {
