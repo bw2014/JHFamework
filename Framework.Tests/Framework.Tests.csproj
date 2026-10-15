@@ -24,10 +24,6 @@
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
-    <Reference Include="FISCA.DSAClient">
-      <HintPath>..\Framework\Library\FISCA.DSAClient.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Framework\Framework.csproj">
@@ -49,7 +45,6 @@
     <Compile Include="TestRunner.cs" />
     <Compile Include="CacheManagerTests.cs" />
     <Compile Include="ConfigurationManagerTests.cs" />
-    <Compile Include="StartupProbesTests.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

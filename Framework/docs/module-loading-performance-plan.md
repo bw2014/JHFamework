@@ -290,7 +290,9 @@ public void PrefetchBackground(params string[] configNamespaces); // 背景版�
 
 沒有這個檔案時，量測程式只會檢查一次檔案是否存在，不會有其他額外成本。實作在 `StartupProfiler.cs`。
 
-**Log 探針**（`StartupProbes.cs`，在 `Program.Initial()` 一開始安裝；Framework 是最早啟動的模組之一，之後載入的模組都量得到）：
+> **探針已移除**：下面的 log 探針（`StartupProbes.cs` 與其測試）完成量測任務後已從程式碼移除，`StartupProfiler` 的步驟計時與組態查詢紀錄保留。需要再次量測時，可以從 commit `3f68295` 取回 `Framework/StartupProbes.cs`、`Framework.Tests/StartupProbesTests.cs`，以及 `Program.Initial()` 開頭的 `StartupProbes.Install();`。
+
+**Log 探針**（已移除；原本在 `Program.Initial()` 一開始安裝；Framework 是最早啟動的模組之一，之後載入的模組都量得到）：
 
 | 探針 | 切入點 | log 內容 |
 |---|---|---|
@@ -345,6 +347,7 @@ public void PrefetchBackground(params string[] configNamespaces); // 背景版�
 - **編譯**：Release 組態 0 個錯誤。警告只剩引用 `[Obsolete]` 舊類別造成的 CS0612/CS0618（23 個，修改前 23 個；因為使用位置移動，兩種代碼的個別數量有增減）。原本的 CS0168 因移除未使用的變數而消失，沒有新增其他種類的警告。
 - **測試**：新增 `Framework.Tests`（主控台程式，不需要 NuGet 套件），共 22 個測試，涵蓋快取命中、未命中、負向快取、刪除、排序、背景同步、P2-1 卡死、多執行緒同步、`ConfigurationManager` 的負向快取、Prefetch、儲存後可讀取，以及 log 探針（封包解析、呼叫來源、排名、組件載入、實際 HTTP 失敗時的紀錄與例外不變）。
   - 新版：全部通過（快取的 15 個連續 3 次，加入探針後的 22 個連續 2 次）。
+  - 探針移除後，探針相關的測試一併移除，保留快取與組態的 15 個測試。
   - 用同一份測試對**修改前**的 `Framework.dll` 執行：負向快取測試失敗（功能不存在），P2-1 卡死測試失敗（證實原本會卡死），多執行緒同步測試**讓整個程序崩潰**（連續 3 次都一樣，原因是原本的 `WaitOne/Reset` 有競爭條件）。
 - **執行測試**：
 

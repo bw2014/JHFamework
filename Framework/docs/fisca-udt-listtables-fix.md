@@ -165,11 +165,12 @@ if (!fresh && IsSchemaChangeRequired(tableElement, sampleRecord))
 
 ## 驗證方式
 
-1. 把新版 `FISCA.UDT.dll` 放進測試宿主的 `kernel\`，確認 `StartupTiming.enable` 還在，然後啟動、登入、等可以操作。
-2. 打開 `StartupTiming.log` 最後一段的「查詢摘要」，找出 `schoolaccess via FISCA.UDT.…` 這一列。因為方法改名，via 會變成 `TableListCache.GetTable`。
+1. 準備量測版的 Framework.dll：記錄 `via` 的 log 探針已從 Framework 主線移除，請從 commit `3f68295` 建置一份含探針的 Framework.dll，只放在測試宿主的 `modules\JHCore\`（不要發布）。
+2. 把新版 `FISCA.UDT.dll` 放進測試宿主的 `kernel\`，確認 `StartupTiming.enable` 還在，然後啟動、登入、等可以操作。
+3. 打開 `StartupTiming.log` 最後一段的「查詢摘要」，找出 `schoolaccess via FISCA.UDT.…` 這一列。因為方法改名，via 會變成 `TableListCache.GetTable`。
    - **預期**：可以操作之前，ListTables 只有 **1 次**；修改前是 10 次，約 39 秒。
    - 如果還是多於 1 次，表示有不同的「主機加合約」組合。請看各次呼叫的端點（`schoolaccess`／`admin`）有沒有不同。
-3. 冒煙測試：新增一個帶新欄位的 UDT 型別，確認欄位會自動建立；兩個模組同時 Insert 時，DDL 不會重複執行，也不會出錯。
+4. 冒煙測試：新增一個帶新欄位的 UDT 型別，確認欄位會自動建立；兩個模組同時 Insert 時，DDL 不會重複執行，也不會出錯。
 
 ---
 

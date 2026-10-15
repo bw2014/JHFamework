@@ -60,6 +60,7 @@ namespace Framework
 
                 AppendLine(string.Format("===== 啟動量測開始 {0:yyyy/MM/dd HH:mm:ss}，Framework {1}，Framework 載入時程序已執行 {2} ms =====",
                     DateTime.Now, typeof(StartupProfiler).Assembly.GetName().Version, _processOffset));
+                Application.ApplicationExit += delegate { WriteSummary(); };
                 return true;
             }
             catch

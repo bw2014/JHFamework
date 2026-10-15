@@ -19,9 +19,6 @@ using System.Runtime.InteropServices;
 // 的型別，請在該型別上將 ComVisible 屬性設定為 true。
 [assembly: ComVisible(false)]
 
-// 讓 Framework.Tests 可以測試 internal 成員。
-[assembly: InternalsVisibleTo("Framework.Tests")]
-
 // 下列 GUID 為專案公開 (Expose) 至 COM 時所要使用的 typelib ID
 [assembly: Guid("7a6b9ac1-7a5d-40c7-9c1b-cad0b5b635d2")]
 

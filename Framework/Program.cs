@@ -18,8 +18,6 @@ namespace Framework
     {
         public static void Initial()
         {
-            //Framework 是最早啟動的模組之一，在此安裝探針，之後載入的模組都能量測到。
-            StartupProbes.Install();
             StartupProfiler.Measure("Framework.Program.Initial（總計）", InitialCore);
         }
 
