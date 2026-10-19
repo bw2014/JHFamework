@@ -54,6 +54,27 @@ namespace Framework.Tests
         }
     }
 
+    /// <summary>
+    /// 模擬使用者組態：讀取時在名稱前加上「帳號::」，且唯讀（不存在時丟出例外，可用來判斷組態是否存在）。
+    /// </summary>
+    internal class AccountConfigurationManager : ConfigurationManager
+    {
+        public AccountConfigurationManager(IConfigurationProvider provider)
+            : base(provider)
+        {
+        }
+
+        protected override string NamespacePreprocess(string configNamespace)
+        {
+            return "acct::" + configNamespace;
+        }
+
+        public override bool Readonly
+        {
+            get { return true; }
+        }
+    }
+
     internal static class ConfigurationManagerTests
     {
         public static void Register()
@@ -62,6 +83,34 @@ namespace Framework.Tests
             TestRunner.Add("ConfigurationManager：Prefetch 以一次請求取得多個組態（P2-3）", PrefetchBatchesRequests);
             TestRunner.Add("ConfigurationManager：Prefetch 略過已快取與已確認不存在的組態", PrefetchSkipsKnownNamespaces);
             TestRunner.Add("ConfigurationManager：儲存新組態後可讀到（負向快取被清除）", SaveAfterMissMakesConfigurationVisible);
+            TestRunner.Add("ConfigurationManager：有名稱前綴（使用者組態）時 Sync 可清除負向快取", SyncAppliesNamespacePrefix);
+        }
+
+        private static bool Exists(ConfigurationManager manager, string configNamespace)
+        {
+            try
+            {
+                object data = manager[configNamespace];
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        private static void SyncAppliesNamespacePrefix()
+        {
+            FakeConfigProvider provider = new FakeConfigProvider();
+            AccountConfigurationManager manager = new AccountConfigurationManager(provider);
+
+            Assert.IsTrue(!Exists(manager, "設定"), "一開始不存在");
+
+            provider.Put("acct::設定"); //例如在另一台電腦上新增了這份使用者組態。
+            manager.Sync("設定");
+
+            Assert.AreEqual("acct::設定", string.Join(",", provider.Requests[provider.Requests.Count - 1].ToArray()), "Sync 應以加上前綴的名稱查詢");
+            Assert.IsTrue(Exists(manager, "設定"), "Sync 後應讀到新組態");
         }
 
         private static void MissingConfigurationIsQueriedOnce()

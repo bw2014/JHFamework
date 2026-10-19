@@ -210,8 +210,32 @@ namespace Framework
         /// <param name="primaryKeys">要更新資料的鍵值</param>
         public void SyncData(IEnumerable<string> primaryKeys)
         {
+            SyncDataCore(primaryKeys, false);
+        }
+
+        /// <summary>
+        /// 索引子快取未命中時使用：取得載入權後，若其他執行緒在等待期間已載入（或已確認查無資料），就不再查詢主機。
+        /// 明確呼叫 SyncData 仍一律重新查詢。
+        /// </summary>
+        private void SyncMissingKey(string key)
+        {
+            SyncDataCore(new string[] { key }, true);
+        }
+
+        private void SyncDataCore(IEnumerable<string> primaryKeys, bool skipKnownKeys)
+        {
             BeginLoading();
             List<string> pKeys = Distinct(primaryKeys);
+            if (skipKnownKeys)
+            {
+                lock (_SortedOrder)
+                    pKeys.RemoveAll(IsKnownKey);
+                if (pKeys.Count == 0)
+                {
+                    _Loading.Set();
+                    return;
+                }
+            }
             List<string> removeKeys = new List<string>();
             List<string> updatedKeys = new List<string>(pKeys);
             try
@@ -451,6 +475,14 @@ namespace Framework
         /// <summary>
         /// 從指定的鍵值中，挑出合法、尚未快取、也還沒確認查無資料的鍵值。
         /// </summary>
+        /// <summary>
+        /// 鍵值是否已在快取中，或已確認查無資料（啟用 CacheMissingKeys 時）。呼叫端必須持有 _SortedOrder 的鎖定。
+        /// </summary>
+        private bool IsKnownKey(string key)
+        {
+            return _List.ContainsKey(key) || (CacheMissingKeys && _MissingKeys.Contains(key));
+        }
+
         internal List<string> FilterUnknownKeys(IEnumerable<string> keys)
         {
             List<string> result = new List<string>();
@@ -458,11 +490,8 @@ namespace Framework
             {
                 foreach (var key in Distinct(keys))
                 {
-                    if (!ValidateKey(key) || _List.ContainsKey(key))
-                        continue;
-                    if (CacheMissingKeys && _MissingKeys.Contains(key))
-                        continue;
-                    result.Add(key);
+                    if (ValidateKey(key) && !IsKnownKey(key))
+                        result.Add(key);
                 }
             }
             return result;
@@ -593,7 +622,8 @@ namespace Framework
                         return default(T);
 
                     //向主機查詢時不持有鎖定，避免其他執行緒的讀取被網路等待卡住。
-                    _Parent.SyncData(ID);
+                    //多個執行緒同時讀取同一筆時，後到的會在取得載入權後發現已載入而不重複查詢。
+                    _Parent.SyncMissingKey(ID);
 
                     lock (_Parent._SortedOrder)
                     {

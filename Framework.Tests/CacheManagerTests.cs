@@ -41,6 +41,12 @@ namespace Framework.Tests
         public List<List<string>> Requests { get; private set; }
         public int GetDataCalls { get { return _getDataCalls; } }
 
+        /// <summary>
+        /// 設定後，GetData 進入時會設定 Entered，並等待 Gate 才繼續，用來讓多個執行緒在查詢中交錯。
+        /// </summary>
+        public ManualResetEvent Gate { get; set; }
+        public ManualResetEvent Entered { get; set; }
+
         public void Put(string id, int rank)
         {
             lock (Server)
@@ -56,6 +62,11 @@ namespace Framework.Tests
         protected override Dictionary<string, Item> GetData(IEnumerable<string> primaryKeys)
         {
             Interlocked.Increment(ref _getDataCalls);
+            if (Gate != null)
+            {
+                Entered.Set();
+                Gate.WaitOne();
+            }
             List<string> keys = new List<string>(primaryKeys);
             lock (Requests)
                 Requests.Add(keys);
@@ -94,6 +105,8 @@ namespace Framework.Tests
             TestRunner.Add("CacheManager：SyncDataBackground 更新資料並引發事件", BackgroundSyncUpdatesAndNotifies);
             TestRunner.Add("CacheManager：多執行緒同時 SyncData 不會卡死且資料完整", ConcurrentSyncDataCompletes);
             TestRunner.Add("CacheManager：SyncAllBackground 載入全部資料", SyncAllLoadsEverything);
+            TestRunner.Add("CacheManager：多執行緒同時讀取同一筆既有資料只查詢一次", ConcurrentReadOfSameKeyQueriesOnce);
+            TestRunner.Add("CacheManager：多執行緒同時讀取同一筆不存在的資料只查詢一次", ConcurrentReadOfMissingKeyQueriesOnce);
         }
 
         private static void HitIsServedFromCache()
@@ -244,6 +257,63 @@ namespace Framework.Tests
             Assert.Eventually(delegate { return finished == 4; }, "四條執行緒都應完成同步");
             Assert.AreEqual(200, cache.Items.Count, "所有資料都應在快取中");
             Assert.AreEqual(200, cache.GetDataCalls, "每個鍵值查詢一次");
+        }
+
+        /// <summary>
+        /// 第一個執行緒停在主機查詢中，第二個執行緒讀取同一筆後等待載入權；放行後第二個執行緒應直接使用第一個的結果。
+        /// </summary>
+        private static int ReadSameKeyConcurrently(FakeCache cache, string key, out Item first, out Item second)
+        {
+            FakeCache.CacheItemCollection items = cache.Items; //先取得 Items，兩個執行緒都透過它讀取。
+            cache.Entered = new ManualResetEvent(false);
+            cache.Gate = new ManualResetEvent(false);
+
+            Item[] results = new Item[2];
+            int finished = 0;
+            Thread t1 = new Thread(delegate() { results[0] = items[key]; Interlocked.Increment(ref finished); });
+            t1.IsBackground = true;
+            t1.Start();
+            Assert.IsTrue(cache.Entered.WaitOne(2000), "第一個執行緒應進入主機查詢");
+
+            Thread t2 = new Thread(delegate() { results[1] = items[key]; Interlocked.Increment(ref finished); });
+            t2.IsBackground = true;
+            t2.Start();
+            Thread.Sleep(300); //讓第二個執行緒走到等待載入權的位置。
+
+            cache.Gate.Set();
+            //同步完成後的事件會透過 Control.Invoke 回到此執行緒，需持續處理訊息。
+            Assert.Eventually(delegate { return finished == 2; }, "兩個執行緒都應完成讀取");
+
+            cache.Gate = null;
+            first = results[0];
+            second = results[1];
+            return cache.GetDataCalls;
+        }
+
+        private static void ConcurrentReadOfSameKeyQueriesOnce()
+        {
+            FakeCache cache = new FakeCache(false);
+            cache.Put("1", 1);
+
+            Item first, second;
+            int calls = ReadSameKeyConcurrently(cache, "1", out first, out second);
+
+            Assert.IsTrue(first != null && second != null, "兩個執行緒都應取得資料");
+            Assert.AreEqual(1, calls, "同一筆資料只應查詢主機一次");
+
+            cache.SyncData("1");
+            Assert.AreEqual(2, cache.GetDataCalls, "明確呼叫 SyncData 仍應重新查詢");
+        }
+
+        private static void ConcurrentReadOfMissingKeyQueriesOnce()
+        {
+            FakeCache cache = new FakeCache(true);
+
+            Item first, second;
+            int calls = ReadSameKeyConcurrently(cache, "99", out first, out second);
+
+            Assert.IsTrue(first == null && second == null, "查無資料應傳回 null");
+            Assert.AreEqual(1, calls, "啟用 CacheMissingKeys 時，同一筆不存在的資料只應查詢一次");
         }
 
         private static void SyncAllLoadsEverything()

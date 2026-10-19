@@ -58,7 +58,8 @@ namespace Framework
         /// </summary>
         public void Sync(string configNamespace)
         {
-            Cache.SyncData(configNamespace);
+            //快取以處理後的名稱為鍵值（例如使用者組態的「帳號::名稱」），同步時必須使用相同的名稱。
+            Cache.SyncData(NamespacePreprocess(configNamespace));
         }
         /// <summary>
         /// 一次向主機取得多個組態並放入快取，之後讀取這些組態時就不需要再逐一查詢。
